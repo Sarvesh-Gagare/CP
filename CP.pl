@@ -172,3 +172,5 @@ show_knowledge_base :-
 % 8. INITIALIZATION (optional)
 % =====================================================
 :- initialization(write('Traffic Violation Prolog Engine Loaded Successfully!\n')).
+
+% hello
