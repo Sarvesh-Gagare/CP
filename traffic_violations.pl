@@ -502,3 +502,6 @@ run_individual_tests :-
 % 12. INITIALIZATION
 % =====================================================
 :- initialization(write('Traffic Violation Prolog Engine Loaded Successfully!\nUse check_violation(VehicleId, ViolationType) for auto explanation.\nRun run_tests. for combined frame test.\nRun run_individual_tests. for per-violation tests.\n')).
+
+% swipl traffic.violations.pl
+% [traffic_violations].
