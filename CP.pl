@@ -9,6 +9,8 @@
 %%           3. Overloading Violation
 %%           4. No Parking Violation
 %%           5. Speed Breaker Violation
+%%  Updated: check_violation/2 now prints true/false
+%%           + explanation automatically
 %% =====================================================
 
 :- module(traffic_violations, [
@@ -16,6 +18,7 @@
     retract_all_facts/0,
     violation/2,
     explain_violation/3,
+    check_violation/2,
     list_all_violations/1,
     clear_knowledge_base/0
 ]).
@@ -145,7 +148,7 @@ no_parking_violation(V) :-
 
 % -------------------------------------------------------
 % NEW Rule 11: Over Speed at Speed Breaker
-%              (limit = 20 km/h near a speed breaker)
+%%             (limit = 20 km/h near a speed breaker)
 % -------------------------------------------------------
 speed_breaker_violation(V) :-
     valid_vehicle(V),
@@ -169,16 +172,29 @@ violation(V, no_parking)        :- no_parking_violation(V).
 violation(V, speed_breaker)     :- speed_breaker_violation(V).
 
 % =====================================================
-% 6. EXPLANATION ENGINE (Recursive Proof Tree → English)
+% 6. EXPLANATION ENGINE (Recursive Proof Tree -> English)
 % =====================================================
 
-explain_violation(V, Type, NaturalExplanation) :-
+% --- Clause 1: Violation EXISTS — cut stops falling to clause 2 ---
+explain_violation(V, Type, Explanation) :-
     violation(V, Type),
+    !,
     findall(Reason, reason_for(Type, V, Reason), Reasons),
     atomic_list_concat(Reasons, ' AND ', ReasonString),
-    format(atom(NaturalExplanation),
-           'Vehicle ~w committed ~w violation because: ~w.',
+    format(atom(Explanation),
+           '[VIOLATION DETECTED] Vehicle ~w committed ~w violation because: ~w.',
            [V, Type, ReasonString]).
+
+% --- Clause 2: NO violation found ---
+explain_violation(V, Type, Explanation) :-
+    \+ violation(V, Type),
+    format(atom(Explanation),
+           '[NO VIOLATION] Vehicle ~w has no ~w violation. All conditions are satisfied.',
+           [V, Type]).
+
+% =====================================================
+% 7. REASON CLAUSES
+% =====================================================
 
 % -------------------------------------------------------
 % Reasons for ORIGINAL violation types
@@ -192,6 +208,7 @@ reason_for(red_light, V, "vehicle is NOT an emergency vehicle") :-
 
 reason_for(speeding, V, Reason) :-
     speed(V, S),
+    S > 60,
     format(atom(Reason), "speed was ~w km/h (limit = 60 km/h)", [S]).
 
 reason_for(wrong_lane, V, "vehicle crossed solid white/yellow line") :-
@@ -210,7 +227,8 @@ reason_for(illegal_u_turn, _, "illegal U-turn attempted at red light").
 % Seatbelt
 reason_for(no_seatbelt, V, "driver/passenger in car is not wearing seatbelt") :-
     vehicle(V, car),
-    seatbelt(V, no).
+    seatbelt(V, no),
+    !.
 
 % Phone Usage
 reason_for(phone_usage, V, "driver was detected using mobile phone while driving") :-
@@ -234,12 +252,98 @@ reason_for(speed_breaker, V, Reason) :-
            "speed was ~w km/h near speed breaker (limit = 20 km/h)", [S]).
 
 % =====================================================
-% 7. PUBLIC API (called from Python)
+% 8. check_violation/2  <- MAIN PREDICATE TO USE
+%%    Usage: ?- check_violation(car_001, no_seatbelt).
+%%    Prints true/false AND explanation automatically.
+% =====================================================
+check_violation(V, Type) :-
+    ( violation(V, Type)
+      -> Result = true
+      ;  Result = false
+    ),
+    explain_violation(V, Type, Explanation),
+    format("~n~`=t~50|~n", []),
+    format("  Result      : ~w~n", [Result]),
+    format("  Explanation : ~w~n", [Explanation]),
+    format("~`=t~50|~n~n", []).
+
+% =====================================================
+% 9. PUBLIC API (called from Python)
 % =====================================================
 
+% All known violation types — used by auto-scan
+all_violation_types([
+    red_light,
+    speeding,
+    wrong_lane,
+    no_helmet,
+    wrong_direction,
+    illegal_u_turn,
+    no_seatbelt,
+    phone_usage,
+    overloading,
+    no_parking,
+    speed_breaker
+]).
+
+% Extract vehicle ID from any fact (if present)
+fact_vehicle_id(vehicle(Id, _), Id).
+fact_vehicle_id(seatbelt(Id, _), Id).
+fact_vehicle_id(speed(Id, _), Id).
+fact_vehicle_id(helmet(Id, _), Id).
+fact_vehicle_id(phone_usage(Id, _), Id).
+fact_vehicle_id(passenger_count(Id, _), Id).
+fact_vehicle_id(parked(Id, _), Id).
+fact_vehicle_id(zone_type(Id, _), Id).
+fact_vehicle_id(near_speed_breaker(Id, _), Id).
+fact_vehicle_id(in_wrong_lane(Id, _), Id).
+fact_vehicle_id(direction(Id, _), Id).
+fact_vehicle_id(crossed_stop_line(Id, _), Id).
+
+% Collect all unique vehicle IDs from a fact list
+collect_vehicle_ids(FactList, UniqueIds) :-
+    findall(Id,
+        (member(Fact, FactList), fact_vehicle_id(Fact, Id)),
+        AllIds),
+    sort(AllIds, UniqueIds).   % sort removes duplicates
+
+% Auto-scan: for each vehicle found, check all violation types
+auto_scan_violations(FactList) :-
+    collect_vehicle_ids(FactList, Ids),
+    all_violation_types(Types),
+    nl,
+    write('========================================'), nl,
+    write('     AUTO VIOLATION SCAN RESULTS        '), nl,
+    write('========================================'), nl,
+
+    % --- Full detail: true/false for every violation type ---
+    forall(
+        member(V, Ids),
+        (
+            format("~n--- Vehicle: ~w ---~n", [V]),
+            forall(
+                member(Type, Types),
+                (
+                    ( violation(V, Type)
+                      -> Result = true
+                      ;  Result = false
+                    ),
+                    explain_violation(V, Type, Exp),
+                    format("  [~w] ~w~n", [Result, Exp])
+                )
+            )
+        )
+    ),
+
+    nl,
+    write('========================================'), nl.
+
 % Assert facts coming from CV (list of terms)
+% — clears old facts first, then asserts new ones, then auto-scans
 assert_facts(FactList) :-
-    forall(member(Fact, FactList), assertz(Fact)).
+    retract_all_facts,
+    forall(member(Fact, FactList), assertz(Fact)),
+    auto_scan_violations(FactList).
 
 % Clear everything before new frame
 retract_all_facts :-
@@ -258,7 +362,9 @@ retract_all_facts :-
     retractall(passenger_count(_, _)),
     retractall(parked(_, _)),
     retractall(zone_type(_, _)),
-    retractall(near_speed_breaker(_, _)).
+    retractall(near_speed_breaker(_, _)),
+    % --- CLEAR TABLED CACHE --- 
+    abolish_all_tables.
 
 clear_knowledge_base :-
     retract_all_facts.
@@ -268,7 +374,7 @@ list_all_violations(Violations) :-
     findall(V-Type, violation(V, Type), Violations).
 
 % =====================================================
-% 8. UTILITIES & DEBUG
+% 10. UTILITIES & DEBUG
 % =====================================================
 show_knowledge_base :-
     listing(vehicle),
@@ -283,8 +389,12 @@ show_knowledge_base :-
     listing(near_speed_breaker).
 
 % =====================================================
-% 9. SAMPLE TEST — load with: ?- run_tests.
+% 11. SAMPLE TESTS
+%     Run combined frame test  : ?- run_tests.
+%     Run per-violation tests  : ?- run_individual_tests.
 % =====================================================
+
+% --- Original combined frame test (all 5 vehicles, all violations) ---
 run_tests :-
     write('=== Loading test facts ==='), nl,
     assert_facts([
@@ -301,11 +411,11 @@ run_tests :-
         traffic_light(red, t_001),
 
         % Speeds
-        speed(car_001, 85),        % speeding
+        speed(car_001, 85),         % speeding
         speed(bike_002, 40),
         speed(truck_003, 55),
         speed(car_004, 30),
-        speed(bike_005, 25),       % over speed breaker limit
+        speed(bike_005, 25),        % over speed breaker limit
 
         % Stop line crossings
         crossed_stop_line(car_001, t_001),
@@ -320,12 +430,12 @@ run_tests :-
         direction(truck_003, wrong_way),
 
         % --- NEW FACTS ---
-        seatbelt(car_001, no),           % no seatbelt
-        phone_usage(car_004, yes),       % using phone
-        passenger_count(bike_005, 3),    % overloaded
+        seatbelt(car_001, no),            % no seatbelt
+        phone_usage(car_004, yes),        % using phone
+        passenger_count(bike_005, 3),     % overloaded
         parked(truck_003, yes),
-        zone_type(truck_003, no_parking),% parked illegally
-        near_speed_breaker(bike_005, yes)% speeding at breaker
+        zone_type(truck_003, no_parking), % parked illegally
+        near_speed_breaker(bike_005, yes) % speeding at breaker
     ]),
     write('=== All Violations Detected ==='), nl,
     list_all_violations(Vs),
@@ -336,7 +446,59 @@ run_tests :-
     write('=== Clearing Facts ==='), nl,
     retract_all_facts.
 
+% --- Individual check_violation tests (true/false + explanation) ---
+run_individual_tests :-
+    write('=== TEST 1: Seatbelt Violation (should be TRUE) ==='), nl,
+    assert_facts([
+        vehicle(car_001, car),
+        seatbelt(car_001, no)
+    ]),
+    check_violation(car_001, no_seatbelt),
+    retract_all_facts,
+
+    write('=== TEST 2: No Seatbelt Violation (should be FALSE) ==='), nl,
+    assert_facts([
+        vehicle(car_002, car),
+        seatbelt(car_002, yes)
+    ]),
+    check_violation(car_002, no_seatbelt),
+    retract_all_facts,
+
+    write('=== TEST 3: Phone Usage Violation (should be TRUE) ==='), nl,
+    assert_facts([
+        vehicle(car_003, car),
+        phone_usage(car_003, yes)
+    ]),
+    check_violation(car_003, phone_usage),
+    retract_all_facts,
+
+    write('=== TEST 4: Overloading Violation (should be TRUE) ==='), nl,
+    assert_facts([
+        vehicle(bike_001, bike),
+        passenger_count(bike_001, 3)
+    ]),
+    check_violation(bike_001, overloading),
+    retract_all_facts,
+
+    write('=== TEST 5: No Parking Violation (should be TRUE) ==='), nl,
+    assert_facts([
+        vehicle(truck_001, truck),
+        parked(truck_001, yes),
+        zone_type(truck_001, no_parking)
+    ]),
+    check_violation(truck_001, no_parking),
+    retract_all_facts,
+
+    write('=== TEST 6: Speed Breaker Violation (should be TRUE) ==='), nl,
+    assert_facts([
+        vehicle(bike_002, bike),
+        near_speed_breaker(bike_002, yes),
+        speed(bike_002, 35)
+    ]),
+    check_violation(bike_002, speed_breaker),
+    retract_all_facts.
+
 % =====================================================
-% 10. INITIALIZATION
+% 12. INITIALIZATION
 % =====================================================
-:- initialization(write('Traffic Violation Prolog Engine Loaded Successfully!\n')).
+:- initialization(write('Traffic Violation Prolog Engine Loaded Successfully!\nUse check_violation(VehicleId, ViolationType) for auto explanation.\nRun run_tests. for combined frame test.\nRun run_individual_tests. for per-violation tests.\n')).
